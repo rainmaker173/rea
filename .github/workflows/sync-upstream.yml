@@ -1,0 +1,50 @@
+# Preserve this public fork by merging changes from morluto/rea once per day.
+# This workflow never force-pushes or runs code from the upstream repository.
+# It only checks out Git data (without submodules) and uses Git to merge.
+# A missing upstream, a merge conflict, or a rejected push fails safely.
+name: Sync REA upstream
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # UTC; 11:17 Asia/Manila
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rea-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'rainmaker173/rea'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+          submodules: false
+          lfs: false
+
+      - name: Merge original upstream without rewriting history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/morluto/rea.git
+          git fetch --no-tags upstream main
+
+          if git merge-base --is-ancestor FETCH_HEAD HEAD; then
+            echo "Already includes the latest upstream main commit."
+            exit 0
+          fi
+
+          # Never reset or force-push: stop if upstream history conflicts.
+          git merge --no-edit FETCH_HEAD
+          git push origin HEAD:main
