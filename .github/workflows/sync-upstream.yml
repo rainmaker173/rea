@@ -1,16 +1,20 @@
-# Preserve this public fork by merging changes from morluto/rea once per day.
-# This workflow never force-pushes or runs code from the upstream repository.
-# It only checks out Git data (without submodules) and uses Git to merge.
-# A missing upstream, a merge conflict, or a rejected push fails safely.
+# Sync the complete upstream main branch without force-pushing.
+# Important: GitHub's built-in GITHUB_TOKEN cannot update .github/workflows/.
+# Store a fine-grained PAT scoped ONLY to this fork as REA_SYNC_PAT,
+# with Contents: read/write and Workflows: read/write.
+#
+# All inherited actions are disabled before sync, and new upstream workflow
+# paths are refused until reviewed. No upstream code is executed by this job.
 name: Sync REA upstream
 
 on:
   schedule:
-    - cron: "17 3 * * *" # UTC; 11:17 Asia/Manila
+    - cron: "17 3 * * *" # UTC; 11:17 AM Asia/Manila
   workflow_dispatch:
 
 permissions:
-  contents: write
+  actions: write # Disable inherited workflows in the fork
+  contents: read
 
 concurrency:
   group: rea-upstream-sync
@@ -22,11 +26,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Disable inherited workflows
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows?per_page=100" \
+            --jq '.workflows[] | select(.state == "active" and .path != ".github/workflows/sync-upstream.yml") | [.id, .path] | @tsv' \
+            > "${RUNNER_TEMP}/inherited-workflows.tsv"
+
+          while IFS=$'\t' read -r workflow_id workflow_path; do
+            [[ -z "${workflow_id}" ]] && continue
+            echo "Disabling inherited workflow: ${workflow_path}"
+            gh api --method PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/disable"
+          done < "${RUNNER_TEMP}/inherited-workflows.tsv"
+
+      - name: Require dedicated synchronization credential
+        shell: bash
+        env:
+          TOKEN_PRESENT: ${{ secrets.REA_SYNC_PAT != '' }}
+        run: |
+          if [[ "${TOKEN_PRESENT}" != "true" ]]; then
+            echo "::error::Missing secret REA_SYNC_PAT. Create a fine-grained PAT scoped to this fork with Contents and Workflows read/write, and save it as a repository Actions secret. Do not paste it into chat."
+            exit 1
+          fi
+
       - name: Checkout fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
+          token: ${{ secrets.REA_SYNC_PAT }}
           persist-credentials: true
           submodules: false
           lfs: false
@@ -40,11 +71,21 @@ jobs:
           git remote add upstream https://github.com/morluto/rea.git
           git fetch --no-tags upstream main
 
+          # Refuse new executable workflow paths until manually reviewed.
+          # Existing workflow files are copied, but remain manually disabled.
+          new_workflows="$(comm -13 \
+            <(git ls-tree -r --name-only HEAD -- .github/workflows | sort) \
+            <(git ls-tree -r --name-only FETCH_HEAD -- .github/workflows | sort))"
+          if [[ -n "${new_workflows}" ]]; then
+            echo "::error::Upstream added workflow files. Review before syncing: ${new_workflows}"
+            exit 1
+          fi
+
           if git merge-base --is-ancestor FETCH_HEAD HEAD; then
             echo "Already includes the latest upstream main commit."
             exit 0
           fi
 
-          # Never reset or force-push: stop if upstream history conflicts.
+          # A conflict, history rewrite, or rejected push must stop the job.
           git merge --no-edit FETCH_HEAD
           git push origin HEAD:main
