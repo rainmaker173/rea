@@ -7,6 +7,9 @@
 name: Sync REA upstream
 
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/sync-upstream.yml'] # Test on workflow revisions
   schedule:
     - cron: "17 3 * * *" # UTC = 11:17 AM Asia/Manila
   workflow_dispatch:
