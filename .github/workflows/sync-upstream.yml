@@ -1,20 +1,19 @@
-# Sync the complete upstream main branch without force-pushing.
-# Important: GitHub's built-in GITHUB_TOKEN cannot update .github/workflows/.
-# Store a fine-grained PAT scoped ONLY to this fork as REA_SYNC_PAT,
-# with Contents: read/write and Workflows: read/write.
-#
-# All inherited actions are disabled before sync, and new upstream workflow
-# paths are refused until reviewed. No upstream code is executed by this job.
+# Token-free archival synchronization of morluto/rea.
+# Only upstream source content is refreshed on main. The 34+ inherited
+# .github/workflows files are intentionally left unchanged and disabled.
+# The Git bundle attached to each snapshot release contains the full Git
+# history and refs fetched from upstream, including original workflow files.
+# No PAT, no force push, and no upstream programs are executed.
 name: Sync REA upstream
 
 on:
   schedule:
-    - cron: "17 3 * * *" # UTC; 11:17 AM Asia/Manila
+    - cron: "17 3 * * *" # UTC = 11:17 AM Asia/Manila
   workflow_dispatch:
 
 permissions:
-  actions: write # Disable inherited workflows in the fork
-  contents: read
+  actions: write
+  contents: write
 
 concurrency:
   group: rea-upstream-sync
@@ -24,9 +23,9 @@ jobs:
   sync:
     if: github.repository == 'rainmaker173/rea'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
-      - name: Disable inherited workflows
+      - name: Disable inherited upstream workflows
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -35,57 +34,93 @@ jobs:
           gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows?per_page=100" \
             --jq '.workflows[] | select(.state == "active" and .path != ".github/workflows/sync-upstream.yml") | [.id, .path] | @tsv' \
             > "${RUNNER_TEMP}/inherited-workflows.tsv"
-
           while IFS=$'\t' read -r workflow_id workflow_path; do
             [[ -z "${workflow_id}" ]] && continue
             echo "Disabling inherited workflow: ${workflow_path}"
             gh api --method PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/disable"
           done < "${RUNNER_TEMP}/inherited-workflows.tsv"
 
-      - name: Require dedicated synchronization credential
-        shell: bash
-        env:
-          TOKEN_PRESENT: ${{ secrets.REA_SYNC_PAT != '' }}
-        run: |
-          if [[ "${TOKEN_PRESENT}" != "true" ]]; then
-            echo "::error::Missing secret REA_SYNC_PAT. Create a fine-grained PAT scoped to this fork with Contents and Workflows read/write, and save it as a repository Actions secret. Do not paste it into chat."
-            exit 1
-          fi
-
-      - name: Checkout fork
+      - name: Checkout fork without running upstream code
         uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ secrets.REA_SYNC_PAT }}
           persist-credentials: true
           submodules: false
           lfs: false
 
-      - name: Merge original upstream without rewriting history
+      - name: Fetch upstream refs and safely refresh source files
+        id: snapshot
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/morluto/rea.git
-          git fetch --no-tags upstream main
+          git fetch --prune upstream \
+            '+refs/heads/*:refs/remotes/upstream/*' \
+            '+refs/tags/*:refs/tags/*'
 
-          # Refuse new executable workflow paths until manually reviewed.
-          # Existing workflow files are copied, but remain manually disabled.
-          new_workflows="$(comm -13 \
-            <(git ls-tree -r --name-only HEAD -- .github/workflows | sort) \
-            <(git ls-tree -r --name-only FETCH_HEAD -- .github/workflows | sort))"
-          if [[ -n "${new_workflows}" ]]; then
-            echo "::error::Upstream added workflow files. Review before syncing: ${new_workflows}"
+          upstream_sha="$(git rev-parse refs/remotes/upstream/main)"
+          if [[ -f .archive-meta/rea-upstream-main.sha ]]; then
+            base_sha="$(cat .archive-meta/rea-upstream-main.sha)"
+          else
+            base_sha="$(git merge-base HEAD "${upstream_sha}")"
+          fi
+          git cat-file -e "${base_sha}^{commit}"
+
+          if ! git merge-base --is-ancestor "${base_sha}" "${upstream_sha}"; then
+            echo "::error::Upstream history appears to have been rewritten; manual review required."
             exit 1
           fi
 
-          if git merge-base --is-ancestor FETCH_HEAD HEAD; then
-            echo "Already includes the latest upstream main commit."
+          # Never replace user modifications outside the archived workflow area.
+          if ! git diff --quiet "${base_sha}" HEAD -- . \
+            ':(exclude).github/workflows' ':(exclude).archive-meta'; then
+            echo "::error::Fork source differs from its last recorded upstream version; manual review required."
+            exit 1
+          fi
+
+          # Copy upstream source and deletions without adding executable workflows.
+          # The original workflow files remain available in the full Git bundle.
+          git restore --source="${upstream_sha}" --staged --worktree -- . \
+            ':(exclude).github/workflows' ':(exclude).archive-meta'
+
+          mkdir -p .archive-meta
+          printf '%s\n' "${upstream_sha}" > .archive-meta/rea-upstream-main.sha
+          git add .archive-meta/rea-upstream-main.sha
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(archive): snapshot upstream source ${upstream_sha:0:12}"
+          else
+            echo "Source already reflects upstream SHA ${upstream_sha}."
+          fi
+
+          # Never force push. Rejection or conflicts fail safely.
+          git push origin HEAD:main
+          echo "upstream_sha=${upstream_sha}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=rea-upstream-${upstream_sha:0:12}" >> "${GITHUB_OUTPUT}"
+
+      - name: Save complete Git history as a release asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_SHA: ${{ steps.snapshot.outputs.upstream_sha }}
+          RELEASE_TAG: ${{ steps.snapshot.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Archival release ${RELEASE_TAG} already exists."
             exit 0
           fi
 
-          # A conflict, history rewrite, or rejected push must stop the job.
-          git merge --no-edit FETCH_HEAD
-          git push origin HEAD:main
+          archive="${RUNNER_TEMP}/rea-upstream-${UPSTREAM_SHA:0:12}.bundle"
+          git bundle create "${archive}" --all
+          git bundle verify "${archive}" > "${RUNNER_TEMP}/bundle-verify.log" 2>&1
+          echo "Bundle size: $(du -h "${archive}" | cut -f1)"
+          gh release create "${RELEASE_TAG}" "${archive}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target main \
+            --title "REA upstream Git archive ${UPSTREAM_SHA:0:12}" \
+            --notes "Git bundle of all refs fetched from upstream and fork, including the original upstream GitHub workflow history. Upstream main: ${UPSTREAM_SHA}. External submodule contents and GitHub issues/PRs are not included."
+          echo "Archived upstream history in release ${RELEASE_TAG}."
