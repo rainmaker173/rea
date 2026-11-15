@@ -17,7 +17,7 @@ database state into a fresh discovery. The default remains ephemeral.
 Use [installation](../getting-started/installation.md#ghidra) for supported hosts, prerequisites,
 configuration, startup deadlines, resource controls, and cleanup recovery.
 [Linux Ghidra launches](../getting-started/installation.md#linux-owned-process-prerequisite) also
-require a procps-compatible `ps` on REA's `PATH` for process ownership checks.
+require a procps-compatible system `ps` for process ownership checks.
 [Windows P0](windows-ghidra-p0.md) has its own admission and lifecycle boundary;
 [NativeAOT observations](ghidra-nativeaot.md) include a built-in read-only PE
 snapshot parser and a separate optional annotation extension. Check the
@@ -230,8 +230,7 @@ status and limitations state.
 
 Relocation rows retain Ghidra's `symbol` value, including an empty string or
 null when returned by Ghidra. It is a provider observation, not proof of the
-runtime-resolved address. Older Evidence may not have recorded this field;
-a relocation page requesting it reports that uncertainty.
+runtime-resolved address. Every relocation row records the field.
 
 For large relocation inventories, select MCP `inspect_native_load_image` with
 `detail: "summary"`. It returns verification state, observed identity and counts,
@@ -438,10 +437,17 @@ offset for that starting address (or null), and containing procedure (or null).
 A starting offset does not imply the full match is contiguous in the file.
 
 Pages default to 100 matches and accept 1 to 1000. Pass `next_cursor` as `cursor`
-with the same target, profile, pattern, mask and bounds to continue. `complete`
-means no further matches remain. `searched.blocks` and `searched.bytes` describe
-the inclusive memory ranges examined for this page, including lookahead for the
-next match. Coverage can overlap between pages; do not sum it as unique memory.
+with the same target, analysis profile or selected project, pattern, mask,
+bounds, and document to continue. A cursor from a different binding is
+rejected. The message names those bound values and states that the cursor does
+not identify which one differs; select the original context or start a new
+search without the cursor. The request matches the input schema, so the error
+carries no `inspect_input_contract` recovery. `details.issues[0].path` is
+`cursor`, and `details.issues[0].observed.differing_component` is `unknown`.
+`complete` means no further matches remain. `searched.blocks` and
+`searched.bytes` describe the inclusive memory ranges examined for this page,
+including lookahead for the next match. Coverage can overlap between pages; do
+not sum it as unique memory.
 `searched.skipped_uninitialized` lists eligible uninitialized blocks on every
 page. These blocks are never searched. Cancellation returns a typed error,
 discards the active Ghidra database, and does not return a successful partial page.

@@ -24,6 +24,7 @@ import {
   wasmArtifactFixture,
   wasmArtifactExecution,
 } from "../../fixtures/wasm/artifact.js";
+import { waitFor } from "../../support/testWait.js";
 
 const schemaValidation = createMcpSchemaValidation();
 afterAll(() => schemaValidation.clear());
@@ -105,7 +106,7 @@ it.each(["bin", "hop"])(
     const harness = await createApplicationMcpHarness({
       schemaValidator: schemaValidation,
       session,
-      serverOptions: { environment: {} },
+      serverOptions: { environment: { REA_MCP_OUTPUT_SCHEMA_PROFILE: "full" } },
     });
     onTestFinished(harness.close);
     const { client } = harness;
@@ -344,7 +345,7 @@ it.each([undefined, "summary"] as const)(
         candidate_paths: [],
       });
       await harness.client.ping();
-      await vi.waitFor(() => {
+      await waitFor(() => {
         // Failed summary delivery retains the complete producer, without a derived view.
         expect(session.exportEvidenceBundle().records).toEqual([partial]);
       });
@@ -614,7 +615,7 @@ it("rejects inconsistent decoded-WAT digests in portable Evidence without a prov
   const value = wasmArtifactFixture();
   const harness = await createApplicationMcpHarness({
     schemaValidator: schemaValidation,
-    serverOptions: { environment: {} },
+    serverOptions: { environment: { REA_MCP_OUTPUT_SCHEMA_PROFILE: "full" } },
   });
   onTestFinished(harness.close);
   const inconsistent = createEvidence(
@@ -657,7 +658,7 @@ it("checks WASM semantic identity while preserving rebound display paths", async
   const value = wasmArtifactFixture();
   const harness = await createApplicationMcpHarness({
     schemaValidator: schemaValidation,
-    serverOptions: { environment: {} },
+    serverOptions: { environment: { REA_MCP_OUTPUT_SCHEMA_PROFILE: "full" } },
   });
   onTestFinished(harness.close);
   const views = [

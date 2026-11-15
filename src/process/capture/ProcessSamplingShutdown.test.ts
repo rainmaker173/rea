@@ -12,6 +12,7 @@ import {
 } from "./ProcessCaptureError.js";
 import { ProcessCaptureResourceScope } from "./ProcessCaptureLifecycle.js";
 import { startProcessSampler } from "./ProcessSampling.js";
+import { waitFor } from "../../../tests/support/testWait.js";
 
 vi.mock("./LinuxProcessSampling.js", async (original) => ({
   ...(await original<typeof import("./LinuxProcessSampling.js")>()),
@@ -108,6 +109,7 @@ it.each(["plain", "all-cancel", "mixed-fd", "opaque-peer"] as const)(
       throw new Error("Unexpected process signal");
     });
     const stop = startProcessSampler({
+      platform: process.platform,
       rootPid: 42,
       runId: "authored",
       started: 0,
@@ -135,7 +137,7 @@ it.each(["plain", "all-cancel", "mixed-fd", "opaque-peer"] as const)(
           Object.defineProperty(process, "platform", platform);
       }
     });
-    await vi.waitFor(() => expect(environment).toHaveBeenCalledOnce());
+    await waitFor(() => expect(environment).toHaveBeenCalledOnce());
     const outcome = stop();
     if (kind === "opaque-peer") {
       const failure: unknown = await outcome.catch((cause: unknown) => cause);
