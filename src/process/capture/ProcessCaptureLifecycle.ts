@@ -1,4 +1,5 @@
 import { OwnerCancellation } from "../../domain/analysisErrorCore.js";
+import { HOST_PLATFORM } from "../../platform/HostPlatform.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, statSync, type BigIntStats } from "node:fs";
 import { open, mkdtemp, rm, stat } from "node:fs/promises";
@@ -10,7 +11,7 @@ import type { IPty } from "@lydell/node-pty";
 import {
   AnalysisCleanupLease,
   AnalysisCleanupLeaseGroup,
-} from "../../artifacts/AnalysisCleanupLease.js";
+} from "../../resources/index.js";
 
 import type { ProcessCapture } from "../../domain/process/processCaptureParsing.js";
 import type { ProcessScenario } from "../../domain/process/processScenario.js";
@@ -63,7 +64,7 @@ import { PROCESS_PROVIDER } from "../../domain/process/processEvidenceProvider.j
 import { TerminalRenderer } from "./TerminalRenderer.js";
 import type { ProcessSensitiveOutput } from "./ProcessSensitiveOutput.js";
 import { AnalysisError } from "../../domain/analysisErrorBase.js";
-import { analysisErrorWithCleanupFailure } from "../../domain/analysisErrorCleanup.js";
+import { analysisErrorWithCleanupDependencies } from "../../domain/analysisErrorCleanup.js";
 import { jsonValueSchema } from "../../domain/jsonValue.js";
 import {
   hasCaptureTruncation,
@@ -89,8 +90,10 @@ import type {
   ProcessCaptureEventJournalEntry,
   RecordProcessCaptureEvent,
   TerminalFrame,
+  ProcessCaptureRootProcess,
 } from "../../domain/process/processCapture.js";
 import { partialProcessCaptureObservationSchema } from "../../domain/process/processCapture.js";
+import { errorMessage } from "../../kernel/errorMessage.js";
 interface TerminalExitOptions {
   readonly terminal: Pick<IPty, "onExit" | "kill">;
   readonly scenario: ProcessScenario;
@@ -702,13 +705,11 @@ export const createRunManifest = async (
   startedAt: Date,
   completedAt: Date,
   executable: LaunchedExecutableObservation,
+  rootProcess: ProcessCaptureRootProcess,
   host: {
     readonly platform: NodeJS.Platform;
     readonly architecture: NodeJS.Architecture;
-  } = {
-    platform: process.platform,
-    architecture: process.arch,
-  },
+  } = HOST_PLATFORM,
 ): Promise<UnverifiedProcessCapture["manifest"]> => {
   const scenarioCommitment = processScenarioCommitment(
     scenario,
@@ -733,6 +734,7 @@ export const createRunManifest = async (
       state: executable.state,
       reason: executable.reason,
     },
+    root_process: rootProcess,
     normalization_sha256: digestProcessCommitment(scenario.normalization),
   };
 };
@@ -743,7 +745,7 @@ export const observeSettlement = async ({
   ownershipEvidence,
   settleMs,
   recordEvent = () => undefined,
-  platform = process.platform,
+  platform,
   signal,
   ownershipHost,
   onLiveProgress,
@@ -753,7 +755,7 @@ export const observeSettlement = async ({
   readonly ownershipEvidence: ProcessOwnershipEvidenceOwner;
   readonly settleMs: number;
   readonly recordEvent?: RecordProcessCaptureEvent;
-  readonly platform?: NodeJS.Platform;
+  readonly platform: NodeJS.Platform;
   readonly signal?: AbortSignal | undefined;
   readonly ownershipHost?: ProcessOwnershipHost;
   readonly onLiveProgress?: (() => void) | undefined;
@@ -824,7 +826,7 @@ export const describeUnverifiedCause = (
   cause: unknown,
   fallback: string,
 ): string => {
-  const message = cause instanceof Error ? cause.message : String(cause);
+  const message = errorMessage(cause);
   return message.trim() === "" ? fallback : message;
 };
 
@@ -1085,7 +1087,7 @@ export interface ProcessCaptureCleanupHost {
 }
 
 const processCaptureCleanupHost: ProcessCaptureCleanupHost = {
-  platform: process.platform,
+  platform: HOST_PLATFORM.platform,
   cleanupProcessGroup: cleanupOwnedProcessGroup,
   removeTemporaryRoot: (path) => rm(path, { recursive: true, force: true }),
 };
@@ -1873,11 +1875,11 @@ export const resolveProcessResult = (
     if (executionFailure instanceof AnalysisError) {
       if (partialObservation !== undefined)
         executionFailure.retainPartialObservation(partialObservation);
-      throw analysisErrorWithCleanupFailure(
+      throw analysisErrorWithCleanupDependencies(
         executionFailure,
         cleanupError,
         "capture_process",
-      ).bindCleanupDependencies([executionFailure, cleanupError]);
+      );
     }
     throw cleanupError;
   }
