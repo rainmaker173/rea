@@ -1260,19 +1260,24 @@ Required CI retains fresh reverse-tools coverage and preflights both canonical
 Stryker configurations with `--dryRunOnly`. These preflights resolve the owned
 targets, instrument the source, and execute the real initial tests. Invalid
 configuration, target resolution, and initial test failures still fail the job.
+Before the dry runs, the mutation project guard checks that each suite’s resolved
+targets are root files in its configured TypeScript project.
 Preflights execute no mutants and produce no mutation-outcome report. Both fast
 feedback and full qualification, including exact-revision release qualification,
 require coverage and both preflights. A failed, canceled, skipped or missing
 selected quality job still fails the required gate.
 
 The separate **Mutation sweep** workflow runs both complete configurations daily
-and on manual dispatch, in two isolated jobs. It is a maintenance check outside
-the PR and release publication gates. `ci:full` requests full regression,
+and on manual dispatch. Each isolated job has a 90-minute budget and passes
+`--concurrency 4` for its 4-vCPU runner; Stryker divides concurrency between
+TypeScript checkers and test runners, so the configurations' default of 2,
+kept for shared local machines, runs one test runner. The sweep runs
+outside the PR and release publication gates. `ci:full` requests full regression,
 coverage and provider qualification; it does not request a complete mutation
-sweep. Use the Mutation sweep workflow to request that result. Targets,
-checkers, concurrency, deadlines and the existing non-blocking mutation-score
-threshold are unchanged. `npm run test:mutation:reverse-tools` also retains both
-complete passes for local callers.
+sweep. Use the Mutation sweep workflow to request that result. Both jobs use the
+canonical configurations, including their per-mutant timeouts and non-blocking
+mutation-score thresholds. `npm run test:mutation:reverse-tools` runs both
+complete passes locally.
 
 The two passes write separate JSON and HTML reports under `reports/mutation/`:
 `reverse-tools` and `reverse-tools-semantics`. Required CI retains focused
@@ -1319,9 +1324,10 @@ for another. Workflow syntax and expression validation runs inside the required
 static-check job when workflow changes select it, avoiding a separate runner.
 Native, provider, fixture, SQLite compatibility, and website lanes wait for
 the fast static checks (typecheck, built lint, and format) to succeed before
-allocating their runners. Knip, duplication, architecture guards, test
-discovery, and the Python producer run in the separate full-tier deep static
-job and do not gate provider admission. On the fast tier, changes to Python
+allocating their runners. Knip runs in the build job on every code change,
+after the build produces the workers that package imports name. Duplication,
+architecture guards, test discovery, and the Python producer run in the
+separate full-tier deep static job and do not gate provider admission. On the fast tier, changes to Python
 bridges, analysis-efficiency inputs, or the Python test runner select a separate
 required Python job. That job installs locked dependencies and prepares the
 compiled runtime before the suite, because analysis-efficiency checks import
